@@ -2,85 +2,68 @@
 
 	Antelope + Hotstuff = Roasted Antelope
 
-	Roasted Antelope is a proposal for an upgrade to the Antelope consensus model, based on the Hotstuff protocol. This document defines extended pseudocode for this upgrade, and should be relatively straightforward to plug into the existing Antelope codebase.
+	Roasted Antelope is a proposal for an upgrade to the Antelope consensus model, based on the Hotstuff protocol. This document defines extended pseudocode for this upgrade.
 
 	Notes: This pseudocode is based on algorithms 4 (safety) & 5 (liveness) of the "HotStuff: BFT Consensus in the Lens of Blockchain" paper.
 
-	There are a few minor modifications to the pacemaker algorithm implementation, allowing to decompose the role of block producer into the 3 sub-roles of block proposer, block finalizer and consensus leader. 
+	There are a few modifications to the pacemaker algorithm implementation, allowing to decompose the role of block producer into the 3 sub-roles of block proposer, block finalizer and consensus leader. 
 
 	This pseudocode handles each role separately. A single entity may play multiple roles.
 
-	As is the case with the algorithm 4 of the hotstuff paper, the notion of view is almost completely decoupled from the safety protocol, and is aligned to the liveness protocol instead. 
+	As is the case with the algorithm 4 of the hotstuff paper, the notion of view is almost completely decoupled from the safety protocol, and is aligned to the liveness protocol instead.
 
-	This pseudocode also covers changes to the finalizer set, which include transition from and into dual_set mode.
-
-	Under dual_set mode, the incumbent and the incoming finalizer sets are jointly confirming views.
-
+	The pseudo code also defines a final_on_qc field as part of a proposal. This field contains another proposal that is guaranteed to be final if the proposal that contains it achieves quorum. 
 
 */
 
 // Data structures 
 
 //evolved from producer_schedule
-struct schedule(){
+schedule(){
 	
 	//currently, block producers fulfill the roles of block_proposers, block_finalizers and consensus_leaders. A future upgrade can further define the selection process for each of these roles, and result in distinct sets of variable size without compromising the protocol's safety
 
 	block_proposers = [...<block proposers>];
 
-	block_finalizers = [...<block finalizers>] //current / incumbent block finalizers set
-	incoming_block_finalizers = [...<block finalizers>]; //incoming block finalizers set, null if operating in single_set mode
+	block_finalizers = [...<block finalizers>];
 
 	consensus_leaders = [...<consensus leaders>];
 
-	current_leader //defined by pacemaker, abstracted;
-	current_proposer //defined by pacemaker, abstracted;
-
-	get_proposer(){return current_proposer} ;
-	get_leader(){return current_leader} ;
-
-	//returns a list of incumbent finalizers
-	get_finalizers(){return block_finalizers} ;
-
-	//returns a combined list of incoming block_finalizers if a change to the set is pending
-	get_incoming_finalizers(){return incoming_block_finalizers} ;
+	current_leader //defined by pacemaker, abstracted [...];
+	current_proposer //defined by pacemaker, abstracted [...];
 
 }
 
 //quorum certificate
-struct qc(){
-	
+qc(){
+
+	//digest to sign and unique identifier of proposal
+	proposal_id
+
 	//block candidate ID, acts as node message
 	block_id
 
 	//phase counter. 0 for prepare, 1 for precommit, 2 for commit, 3 for decide
 	phase_counter
 
-	//aggregate signature of finalizers part of this qc
+	//aggregate signature of finalizers part of this QC
 	agg_sig
 
-	//data structure which includes the list of signatories included in the aggregate, (for easy aggregate signature verification). It can also support dual_set finalization mode
+	//data structure which includes the list of signatories included in the aggregate, (for easy aggregate signature verification)
 	sig_bitset
-
-	//aggregate signature of incoming finalizers part of this qc, only present if we are operating in dual_set finalization mode
-	<optional> incoming_agg_sig;
-
-	//data structure which includes the list of incoming signatories included in the aggregate (for easy verification), only present if we are operating in dual_set finalization mode
-	<optional> incoming_sig_bitset;
 
 	//get block height from block_id + phase_counter
 	get_height() = <block height + phase_counter>; //abstracted [...]
 
-	//check if a quorum of valid signatures from active (incumbent) finalizers has been met according to me._threshold
-	quorum_met() = <true or false>; //abstracted [...]
-
-	//check if a quorum of valid signatures from both active (incumbent) finalizers AND incoming finalizers has been met. Quorums are calculated for each of the incumbent and incoming sets separately, and both sets must independently achieve quorum for this function to return true
-	extended_quorum_met() = <true or false>;//abstracted [...]
+	//check if a quorum of valid signatures (greater or equal to me._threshold) from the active finalizer set has been met
+	quorum_met(){
+		//return <true or false>; //abstracted [...]
+	}
 
 }
 
 //proposal
-struct block_proposal(){
+block_proposal(){
 
 	//digest to sign and unique identifier of proposal
 	proposal_id
@@ -91,14 +74,14 @@ struct block_proposal(){
 	//phase counter. 0 for prepare, 1 for precommit, 2 for commit, 3 for decide
 	phase_counter
 
-	//qc justification for this block
+	//QC justification for this block
 	justify
 
 	//block id, which also encodes the block height
 	block_id
 
 	//previous proposal that is guaranteed to be final if the current proposal has quorum
-	commit_on_qc
+	final_on_qc
 
 	//return block height from block_id + phase_counter
 	get_height() =  <block height + phase_counter>; //abstracted [...];
@@ -112,7 +95,7 @@ struct block_proposal(){
 enum msg_type {
 	new_view //used when leader rotation is required
 	new_block //used when proposer is different from leader
-	qc 	//progress
+	qc 	//quorum certificate progress
 	vote //vote by replicas
 }
 
@@ -130,13 +113,11 @@ me._b_leaf; //current block_proposal
 
 me._high_qc; //highest known QC
 
-me._dual_set_height; //dual set finalization mode active as of this (block height + phase_counter) tuple, -1 if operating in single_set mode. A finalizer set change is successfully completed when a block is committed at the same or higher (block height + phase_counter) tuple
-
 //chain data
 
-me._b_temporary; //temporary storage of received block_proposals. Pruning rules are abstracted
+me._b_storage; //temporary storage of received block_proposals. Pruning rules (ie: removing committed or stale proposals) are abstracted from the pseudo code
 
-me._schedule //current block producer schedule, mapped to new structure
+me._schedule //current block producer schedule
 
 
 //global configuration
@@ -189,55 +170,69 @@ network_plugin.on_vote_received(msg){
 }
 
 
-
-
-
 //Pacemaker algorithm, regulating liveness
 
+//returns the current proposer from the activate schedule
+pacemaker.get_proposer(){
+	//abstracted [...]
+}
 
-//on_beat(block) is called in the following cases :
-//1) As a block proposer, when we generate a block_proposal
-//2) As a consensus leader, when we receive a block_proposal from a proposer
-//3) As a consensus leader, when we complete a quorum certificate on a phase
+//returns the current leader from the activate schedule
+pacemaker.get_leader(){
+	//abstracted [...]
+}
+
+//returns a list of current finalizers from the activate schedule
+pacemaker.get_finalizers(){
+	//abstracted [...]
+}
+
+/*
+
+	on_beat(block_proposal) is called in the following cases :
+
+	1) As a block proposer, when we generate a block_proposal
+	2) As a consensus leader, when we receive a block_proposal from a proposer
+	3) As a consensus leader, when we complete a quorum certificate on a phase
+
+*/
+
 pacemaker.on_beat(block_proposal){
 
-	am_i_proposer = me._schedule.get_proposer() == me; //am I proposer?
-	am_i_leader = me._schedule.get_leader() == me; //am I leader?
+	am_i_proposer = get_proposer() == me; //am I proposer?
+	am_i_leader = get_leader() == me; //am I leader?
 
-	if (!am_i_proposer && !am_i_leader) return; //replicas don't have to do anything here, unless they are also leader and/or proposer
+	if (!am_i_proposer && !am_i_leader) return; //replicas that are not the leader nor the proposer don't have to do anything here
 	
 	//if i'm the leader
 	if (am_i_leader){
 		
 		if (!am_i_proposer){
 
-			//block validation hook
+			//block validation
 			//abstracted [...]
 			
-			//If I am the leader but not the proposer, check if proposal is safe.
-			if(!hotstuff.is_node_safe(block_proposal)) return;
-	
 		}
 
 		me._b_leaf = block_proposal; 
 
 	}
  	
- 	if (am_i_leader) msg = new_message(qc, block_proposal); //if I'm leader, send qc message
- 	else msg = new_message(new_block, block_proposal); //if I'm only proposer, send new_block message
+ 	if (am_i_leader) msg = new_message(qc, block_proposal); //if I'm leader, send QC message
+ 	else if (am_i_proposer) msg = new_message(new_block, block_proposal); //if I'm only proposer, send new_block message
 
 	network_plugin.broadcast(msg); //broadcast message
 
 }
 
-//update high qc
+//update high QC
 pacemaker.update_high_qc(new_high_qc){
 	
 	// if new high QC is higher than current, update to new
 	if (new_high_qc.get_height()>me._high_qc.get_height()){
 
 		me._high_qc = new_high_qc;
-		me._b_leaf = me._b_temporary.get(me._high_qc.get_height());
+		me._b_leaf = me._b_storage.get(me._high_qc.proposal_id);
 
 	} 
 
@@ -259,16 +254,6 @@ pacemaker.on_msg_received(msg){
 	}
 }
 
-//returns the proposer, according to schedule
-pacemaker.get_proposer(){
-	return schedule.get_proposer(); //currently active producer is proposer
-}
-
-//returns the leader, according to schedule
-pacemaker.get_leader(){
-	return schedule.get_leader(); //currently active producer is leader
-}
-
 
 /*
 
@@ -276,17 +261,17 @@ pacemaker.get_leader(){
 
 	Corresponds to onNextSyncView in hotstuff paper. Handles both leader rotations as well as timeout if leader fails to progress
 
-	Note : for maximum liveness, we're proposing an optimization : on_leader_rotate() should be called by replicas as early as possible when either :
+	on_leader_rotate() should be called by replicas as early as possible when either :
 	 
-	 1) no more blocks are expected before leader rotation occurs (eg: after receiving the final block expected from the current leader before the handoff) 
+	1) no more blocks are expected before leader rotation occurs (eg: after receiving the final block expected from the current leader before the handoff) 
 
-	 OR
+	OR
 
-	 2) if we reach (me._block_interval * (me._blocks_per_round - 1)) time into a specific view, and we haven't received the expected second to last block for this round. In other words, assuming our _blocks_per_round value is 12, if we haven't received the 11th block by the time at which the 12th is scheduled, our probability of both receiving the 12th block and being able to provide our high_qc to the next leader before the next round begins are very low. Therefore, we can send our high_qc right away.
+	2) if we reach (me._block_interval * (me._blocks_per_round - 1)) time into a specific view, and we haven't received the expected second to last block for this round. In other words, assuming our _blocks_per_round value is 12, if we haven't received the 11th block by the time at which the 12th is scheduled, our probability of both receiving the 12th block and being able to provide our high_qc to the next leader before the next round begins are very low. Therefore, we can send our high_qc right away.
 
-	 In scenarios where liveness is maintained, this relieves an incoming leader from having to wait until it has received n - f new_view messages at the beginning of a new view since it will already have the highest qc.
+	In scenarios where liveness is maintained, this relieves an incoming leader from having to wait until it has received n - f new_view messages at the beginning of a new view since it will already have the highest QC.
 
-	 In scenarios where liveness has been lost due to f + 1 faulty replicas, progress is impossible, so the safety rule rejects attempts at creating a qc until liveness has been restored. 
+	In scenarios where liveness has been lost due to f + 1 faulty replicas, progress is impossible, so the safety rule rejects attempts at creating a QC until liveness has been restored. 
 
 */
 
@@ -298,29 +283,22 @@ pacemaker.on_round_timeout(){
 
 }
 
+//called by replicas when it is time to rotate to a new leader. See onNextSyncView
 pacemaker.on_leader_rotate(){
 
-	msg = new_message(new_view, me._high_qc); //add highest qc
+	msg = new_message(new_view, me._high_qc); //add highest QC
 
 	network_plugin.broadcast(msg); //broadcast message
 
 }
 
-//producer_plugin hook for block generation
-
-//on block produced event handler (block includes signature of proposer)
+//on block produced event handler
 producer_plugin.on_block_produced(block){
 	
-	//generate a new block extending from me._b_leaf
+	//generate a new block
 	//abstracted [...] 
 
-	/*
-
-		Include the highest qc we recorded so far. Nodes catching up or light clients have a proof that the block referred to as high qc is irreversible. 
-	
-		We can merge the normal agg_sig / sig_bitset with the incoming_agg_sig / incoming_sig_bitset if the qc was generated in dual_set mode before we include the qc into the block, to save space
-
-	*/
+	//Include the highest QC we recorded so far
 
 	block.qc = me._high_qc;
 
@@ -331,30 +309,44 @@ producer_plugin.on_block_produced(block){
 }
 
 
-
 //Hotstuff algorithm, regulating safety
 
+//get the 3-phase QC chain for a given proposal
+hotstuff.get_qc_chain(block_proposal){
+
+	b[];
+
+	b[2] = me._b_storage.get(block_proposal.justify.proposal_id); //first phase, prepare
+	b[1] = me._b_storage.get(b[2].justify.proposal_id); //second phase, precommit
+	b[0] = me._b_storage.get(b[1].justify.proposal_id); //third phase, commit
+
+	return b;
+
+}
 
 //new proposal candidate generation
 hotstuff.new_proposal_candidate(block) {
 	
-	b.parent = me._b_leaf ; //proposal which this new proposal builds upon, or null if no _b_leaf upon activation or chain launch
-	b.phase = 0;
-	b.justify = me._high_qc; //or null if no _high_qc upon activation or chain launch
-	b.block_id = block.header.block_id();
+	//create new proposal b_new
 
-	b_array = hotstuff.get_qc_chain(block_proposal);
+	b_new.parent = me._b_leaf ; //proposal which this new proposal builds upon, or null if no _b_leaf upon activation or chain launch
+	b_new.phase_counter = 0;
+	b_new.justify = me._high_qc; //or null if no _high_qc upon activation or chain launch
+	b_new.block_id = block.header.block_id();
+
+	//we get the 3-phase chain for the current proposal, and find which proposal will be committed if we reach a commit on the current proposal
+	b_array = hotstuff.get_qc_chain(b_new);
 
 	b2 = b_array[2] //first phase, prepare
 	b1 = b_array[1] //second phase, precommit
 	b = b_array[0] //third phase, commit
 
-	if (b2.parent == b1 && b1.parent == b) b.commit_on_qc = b;
-	else b.commit_on_qc = b.parent.commit_on_qc; //or null if no parent proposal upon activation or chain launch
+	if (b_new.parent == b2 && b2.parent == b1) b_new.final_on_qc = b1;
+	else b_new.final_on_qc = b1.parent.final_on_qc;
 
-	b.proposal_id = hash(block_id, phase_counter, b.commit_on_qc);
+	b_new.proposal_id = hash(b_new.block_id, b_new.phase_counter, b_new.final_on_qc);
 
-	return b;
+	return b_new;
 }
 
 //safenode predicate
@@ -371,15 +363,16 @@ hotstuff.is_node_safe(block_proposal){
 	b1 = b_array[1] //second phase, precommit
 	b = b_array[0] //third phase, commit
 
-	if (b2.parent == b1 && b1.parent == b) previous_lock = b;
-	else previous_lock = b.parent.commit_on_qc;
+	if (block_proposal.parent == b2 && b2.parent == b1) upcoming_commit = b1;
+	else upcoming_commit = b1.parent.final_on_qc;
 
-	//note : if we can't evaluate the qc chain upon activation or chain launch, we set commit_on_qc_check to true
+	//note : if we can't evaluate the QC chain upon activation or chain launch, we set commit_on_qc_check to true
 	//abstracted [...]
-	if (previous_lock == proposal.commit_on_qc){
+	if (upcoming_commit == proposal.final_on_qc){
 		commit_on_qc_check = true;
 	}
 	
+	//Lemma 1
 	if (block_proposal.get_height() > me._v_height){
 		monotony_check = true;
 	}
@@ -405,7 +398,7 @@ hotstuff.is_node_safe(block_proposal){
 	}
 
 	//Lemma 2
-	return commit_on_qc_check && monotony_check && (liveness_check || safety_check); //return true if commit on qc check, monotony check and at least one of liveness or safety check evaluated successfully
+	return commit_on_qc_check && monotony_check && (liveness_check || safety_check); //return true if commit on QC check, monotony check and at least one of liveness or safety check evaluated successfully
 
 }
 
@@ -420,64 +413,40 @@ hotstuff.extends(b_descendant, b_ancestor){
 
 }
 
-//creates or get, then return the current qc for this block candidate
+//creates or get, then return the current QC for this block candidate
 hotstuff.create_or_get_qc(block_proposal){
 	
-	//retrieve from or create and store unique QC for this proposal. Primary key for storage is encoded from block_id and phase_counter 
+	//retrieve from or create and store unique QC for this proposal. Primary key for storage is proposal_id 
 	//abstracted [...]
 
 	return qc; // V[]
 
 }
 
-//add a signature to a qc
+//add a signature to a QC
 hotstuff.add_to_qc(qc, finalizer, sig){
 	
-	//update qc reference
+	//update QC reference
 
-	// V[b] 
-
-	if (schedule.get_finalizers.contains(finalizer) && !qc.sig_bitset.contains(finalizer)){
+	if (get_finalizers().contains(finalizer) && !qc.sig_bitset.contains(finalizer)){
 		qc.sig_bitset += finalizer;
 		qc.agg_sig += sig; //signature aggregation
 	}
 	
-	if (schedule.get_incoming_finalizers.contains(finalizer) && !qc.incoming_sig_bitset.contains(finalizer)){
-		qc.incoming_sig_bitset += finalizer;
-		qc.incoming_agg_sig += sig;  //signature aggregation
-	}
-
 }
 
 //when we receive a proposal
 hotstuff.on_proposal_received(msg){
 	
-	//block candidate validation hook (check if block is valid, etc.), return if not 
+	//block candidate validation (check if block is valid, etc.), return if not 
 	//abstracted [...]
 
-	/*
+	am_i_finalizer = get_finalizers().contains(me);
 
-		First, we verify if we have already are aware of a proposal at this block height + phase_counter tuple
-
-	*/
-
-	//BEGIN Lemma 1
-	stored_block = me._b_temporary.get(msg.block_proposal.get_height());
-
-	//check if I'm finalizer, in which case I will optionally sign and update my internal state
-	
-	am_i_finalizer = get_finalizers.contains(me) || get_incoming_finalizers(me);
-
-	skip_sign = false;
-
-	//If we already have a proposal at this height, we must not double sign so we skip signing, else we store the proposal and and we continue
-	if (stored_block) skip_sign = true;
-	else me._b_temporary.add(msg.block_proposal); //new proposal 
-
-	//END Lemma 1
+	me._b_storage.add(msg.block_proposal); //new proposal 
 
 	//if I am a finalizer for this proposal and allowed to sign, test safenode predicate for possible vote
-	if (am_i_finalizer && !skip_sign && hotstuff.is_node_safe(msg.block_proposal)){
+	if (am_i_finalizer && hotstuff.is_node_safe(msg.block_proposal)){
 		
 		me._v_height = msg.block_proposal.get_height();
 
@@ -487,7 +456,7 @@ hotstuff.on_proposal_received(msg){
 
 			In Hotstuff, we need to sign a tuple of (msg.view_type, msg.view_number and msg.node).
 
-			In our implementation, we define proposal_id as a digest of the tuple (block_id, phase_counter, commit_to_qc), which is also the message replicas sign. This allows the vote message to be as compact as possible. 
+			In our implementation, we define proposal_id as the message replicas sign, which is a digest of the tuple (block_id, phase_counter, final_on_qc).
 
 		*/
 
@@ -516,22 +485,17 @@ hotstuff.on_vote_received(msg){
 	//check for duplicate or invalid vote, return in either case
 	//abstracted [...]
 
-	am_i_leader = me._schedule.get_leader() == me; //am I leader?
+	am_i_leader = get_leader() == me; //am I leader?
 
 	if(!am_i_leader) return;
 
 	//only leader need to take action on votes
 
-	qc = hotstuff.create_or_get_qc( msg.block_proposal); //qc reference
+	qc = hotstuff.create_or_get_qc( msg.block_proposal); //create or get the qc for this proposal
 
 	hotstuff.add_to_qc(qc, msg.finalizer, msg.sig);
 
-	if (me._dual_set_height != -1 && msg.block_proposal.get_height()>= _dual_set_height){
-		quorum_met = qc.extended_quorum_met();
-	}
-	else quorum_met = qc.quorum_met();
-
-	if (quorum_met){
+	if (qc.quorum_met()){
 	
 		pacemaker.update_high_qc(qc);
 
@@ -548,19 +512,6 @@ hotstuff.on_vote_received(msg){
 
 }
 
-//get the 3-phase qc chain for a given proposal
-hotstuff.get_qc_chain(block_proposal){
-
-	b[];
-
-	b[2] = me._b_temporary.get(block_proposal.justify.get_height()); //first phase, prepare
-	b[1] = me._b_temporary.get(b[2].justify.get_height()); //second phase, precommit
-	b[0] = me._b_temporary.get(b[1].justify.get_height()); //third phase, commit
-
-	return b;
-
-}
-
 //internal state update of replica
 hotstuff.update(block_proposal){
 	
@@ -572,16 +523,6 @@ hotstuff.update(block_proposal){
 	b1 = b_array[1] //second phase, precommit
 	b = b_array[0] //third phase, commit
 
-	//if a proposed command for the transition of the finalizer set is included in b_new's commands (for which we don't have a qc). Nothing special to do, but can be a useful status to be aware of for external APIs.
-	new_proposed_transition = <true or false>; //abstracted [...]
-
-	//if a transition command of the finalizer set is included in b2's commands (on which we now have a qc), we now know n - f replicas approved the transition. If no other transition is currently pending, it becomes pending.
-	new_pending_transition = <true or false>; //abstracted [...]
-
-	if (new_pending_transition){
-		me._dual_set_height = b_new.get_height() + 1; //if this block proves a quorum on a finalizer set transition, we now start using the extended_quorum_met() predicate until the transition is successfully completed
-	}
-
 	//precommit phase on b2
 	pacemaker.update_high_qc(block_proposal.justify);
 
@@ -591,17 +532,6 @@ hotstuff.update(block_proposal){
 
 	//direct parent relationship verification 
 	if (b2.parent == b1 && b1.parent == b){
-
-		//if we are currently operating in dual set mode reaching this point, and the block we are about to commit has a height higher or equal to me._dual_set_height, it means we have reached extended quorum on a view ready to be committed, so we can transition into single_set mode again, where the incoming finalizer set becomes the active finalizer set
-		if (me._dual_set_height != -1 && b.get_height() >= me._dual_set_height){
-
-			//reset internal state to single_set mode, with new finalizer set
-			me._schedule.block_finalizers = me_.schedule.incoming_finalizers;
-			me_.schedule.incoming_finalizers = null;
-			me._dual_set_height = -1;
-
-
-		}
 		
 		hotstuff.commit(b);
 		
@@ -619,7 +549,7 @@ hotstuff.commit(block_proposal){
 	//can only commit newer blocks
 	if (me._b_exec.get_height() < block_proposal.get_height()){
 		
-		parent_b = _b_temporary.get(block_proposal.parent.get_height());
+		parent_b = _b_storage.get(block_proposal.parent.proposal_id);
 
 		hotstuff.commit(parent_b); //recursively commit all non-committed ancestor blocks sequentially first
 
@@ -638,15 +568,14 @@ hotstuff.commit(block_proposal){
 
 		Lemma 1. Let b and w be two conflicting block_proposals such that b.get_height() = w.get_height(), then they cannot both have valid quorum certificates.
 
-		Proof. Suppose they can, so both b and w receive 2f + 1 votes, among which there are at least f + 1 honest replicas
-		voting for each block_proposal, then there must be an honest replica that votes for both, which is impossible because b and w
-		are of the same height.
+		Proof. Suppose they can, so both b and w receive 2f + 1 votes, among which there are at least f + 1 honest replicas voting for each block_proposal, then there must be an honest replica that votes for both, which is impossible because b and w are of the same height.
 
-		This is enforced by the codeblock labeled "Lemma 1", which prevents honest replicas from casting two votes for the same proposal height. 
+		This is enforced by the monotony check of the code block labeled "Lemma 1", which prevents honest replicas from casting two votes for the same proposal height. 
 
 		Lemma 2. Let b and w be two conflicting block_proposals. Then they cannot both become committed, each by an honest replica.
 
 		Proof. We prove this lemma by contradiction. Let b and w be two conflicting block_proposals at different heights.
+		
 		Assume during an execution, b becomes committed at some honest replica via the QC Three-Chain b.
 
 		For this to happen, b must be the parent and justification of b1, b1 must be the parent and justification of b2 and b2 must be the justification of a new proposal b_new.
@@ -675,78 +604,52 @@ hotstuff.commit(block_proposal){
 
 		Proof. Suppose replica r is locked on generic_qc_2. Then, (n-f) votes were cast for the matching generic_qc_1 in an earlier phase (see line labeled "Lemma 4"), out of which at least f + 1 were from correct replicas.
 
-		Theorem 5. After GST, there exists a bounded time period T_f such that if all correct replicas remain in view v during
-		T_f and the leader for view v is correct, then a decision is reached.
+		Theorem 5. After GST, there exists a bounded time period T_f such that if all correct replicas remain in view v during T_f and the leader for view v is correct, then a decision is reached.
 
-		Proof. Starting in a new view, the leader has collected (n − f) new_view or vote messages and calculates its high_qc before
-		broadcasting a qc message. Suppose among all replicas (including the leader itself), the highest kept lock
-		is me._b_lock.justify = generic_qc_new_2.
+		Proof. Starting in a new view, the leader has collected (n − f) new_view or vote messages and calculates its high_qc before broadcasting a QC message. Suppose among all replicas (including the leader itself), the highest kept lock is me._b_lock.justify = generic_qc_new_2.
 
-		By Lemma 4, we know there are at least f + 1 correct replicas that voted for a generic_qc_new_1 matching generic_qc_new_2, and have already sent them to the leader in their new_view or vote messages. Thus, the leader must learn a matching generic_qc_new_2 in at least one of these new_view or vote messages and use it as high_qc in its initial qc message for this view. By the assumption, all correct replicas are synchronized in their view and the leader is non-faulty. Therefore, all correct replicas will vote at a specific height, since in is_node_safe(), the condition on the line labeled "Liveness check" is satisfied. This is also the case if a proposal conflicts with a replica’s stale me._b_lock.justify, such that the condition on the line labeled "Safety check" is evaluated to false. 
+		By Lemma 4, we know there are at least f + 1 correct replicas that voted for a generic_qc_new_1 matching generic_qc_new_2, and have already sent them to the leader in their new_view or vote messages. Thus, the leader must learn a matching generic_qc_new_2 in at least one of these new_view or vote messages and use it as high_qc in its initial QC message for this view. By the assumption, all correct replicas are synchronized in their view and the leader is non-faulty. Therefore, all correct replicas will vote at a specific height, since in is_node_safe(), the condition on the line labeled "Liveness check" is satisfied. This is also the case if a proposal conflicts with a replica’s stale me._b_lock.justify, such that the condition on the line labeled "Safety check" is evaluated to false. 
 
 		Then, after the leader has a valid generic_qc for this view, all replicas will vote at all the following heights, leading to a new commit decision at every step. After GST, the duration T_f for the steps required to achieve finality is of bounded length.
 
 		The protocol is Optimistically Responsive because there is no explicit “wait-for-∆” step, and the logical disjunction in is_node_safe() is used to override a stale lock with the help of the Three-Chain paradigm.
 
-		In order to ensure that the protocol keeps progressing even in the presence of a faulty leader, the pacemaker currently falls back to the existing Antelope schedule consensus mechanism, where leader rotation occurs at each interval of (_block_interval * _blocks_per_round). Selection is part of the consensus, and follows canonical schedule ordering, typically following alphabetical producer name or numerical location ordering. However, a new pacemaker algorithm can be defined as part of a future upgrade if desired, without breaking the safety of the protocol.
+		In order to ensure that the protocol keeps progressing even in the presence of a faulty leader, the pacemaker algorithm currently uses the existing Antelope schedule consensus mechanism, where leader rotation occurs at each interval of (_block_interval * _blocks_per_round). Selection is part of the consensus, and follows canonical schedule ordering, typically following alphabetical producer name or numerical location ordering. However, a new pacemaker algorithm can be defined as part of a future upgrade if desired, without breaking the safety of the protocol.
 
 
 	Accountability and finality violation :
 
-		Let us define b_descendant as a proposal descendant of a b_root proposal, such that hotstuff.extends(b_descendant, b_root) returns true.
+		Let us define b_2 as a proposal descendant of a b_0 proposal, such that hotstuff.extends(b_2, b_0) returns true.
 
-		Suppose b_descendant's block header includes a high_qc field representing a 2f + 1 vote on b_root. When we become aware of a new block where the high_qc points to b_descendant or to one of b_descendant's descendants, we know b_root, as well as all of b_root's ancestors, have been committed and are final.
+		Suppose b_2.justify is b_1, and that b_1.justify is b_0. When we become aware of a new proposal where justify is a valid QC pointing to b_2, we know b_0, as well as all of b_0's ancestors, have been committed and are final.
 
-		Theorem 6. Let b_root and w_root be two conflicting block_proposals of the same height, such that hotstuff.extends(b_root, w_root) and hotstuff.extends(w_root, b_root) both return false, and that b_root.get_height() == w_root.get_height(). Then they cannot each have a valid quorum certificate unless a finality violation has occurred. In the case of such finality violation, any party in possession of b_root and w_root would be able to prove complicity or exonerate block finalizers having taken part or not in causing the finality violation.
+		Theorem 6. Let b_2 and w_2 be two conflicting block_proposals of the same height, such that hotstuff.extends(b_2, w_2) and hotstuff.extends(w_2, b_2) both return false, and that b_2.get_height() == w_2.get_height(). Then they cannot each receive a valid quorum certificate without causing a finality violation on b_0 and w_0. In the case of such finality violation, any party in possession of a proposal with a QC justification pointing to b_2 and of a proposal with a QC justification pointing to w_2 would be able to prove complicity of block finalizers having taken part in this finality violation, as well as exonerate block finalizers having not taken part in the finality violation.
 
-		Proof. Let b_descendant and w_descendant be descendants of respectively b_root and w_root, such that hotstuff.extends(b_descendant, b_root) and hotstuff.extends(w_descendant, w_root) both return true.
+		Proof. Let b_2 and w_2 be descendants of respectively b_0 and w_0, such that hotstuff.extends(b_2, b_0) and hotstuff.extends(w_2, w_0) both return true. Let b_2.justify = b_1, b_1.justify = b_0, and w_2.justify = w_1, w_1.justify = w_0. 
 
-		By Lemma 1, we know that a correct replica cannot sign two conflicting block candidates at the same height.
+		By Lemma 1, we know that a correct replica cannot sign two conflicting proposal candidates at the same height.
 
-		For each of b_root and w_root, we can identify and verify the signatures of finalizers, by ensuring the justification's agg_sig matches the aggregate key calculated from the sig_bitset and the schedule.
+		Suppose we hold proposals b_new and w_new, where b_new.justify = b_2 and w_new.justify = w_2, we can identify and verify the signatures of finalizers, by ensuring the justification's agg_sig matches the aggregate key calculated from the sig_bitset and the schedule.
 
-		Therefore, for b_root and w_root to both be included as qc justification into descendant blocks, at least one correct replica must have signed two vote messages on conflicting block candidates at the same height, which is impossible due to the checks performed in the function with comment "Lemma 1". Such an event would be a finality violation.
+		Therefore, for b_2 and w_2 to both be included as a QC justification into descendant blocks b_new and w_new, at least one correct replica must have signed two vote messages on conflicting block candidates at the same height, which is impossible due to the checks performed in the function with comment "Lemma 1". Such an event would cause a finality violation on b_0 and w_0.
 
-		For a finality violation to occur, the intersection of the finalizers that have voted for both b_root and w_root, as evidenced by the high_qc of b_descendant and w_descendant must represent a minimum of f + 1 faulty nodes.
+		For a finality violation to occur, the intersection of the finalizers that have voted for both b_2 and w_2, as evidenced by b_new.justify = b_2 and w_new.justify = w_2 must represent a minimum of f + 1 faulty nodes.
 
-		By holding otherwise valid blocks where a qc for b_root and w_root exist, the finality violation can be proved trivially, simply by calculating the intersection and the symmetrical difference of the finalizer sets having voted for these two proposals. The finalizers contained in the intersection can therefore be blamed for the finality violation. The symmetric difference of finalizers that have voted for either proposal but not for both can be exonerated from wrong doing, thus satisfying the Accountability property requirement.
-
-	Finalizer set transition (safety proof) :
-
-		Replicas can operate in either single_set or dual_set validation mode. In single_set mode, quorum is calculated and evaluated only for the active finalizer set. In dual_set mode, independant quorums are calculated over each of the active (incumbent) finalizer set and the incoming finalizer set, and are evaluated separately. 
-
-		Let us define active_set as the active finalizer set, as determined by the pacemaker at any given point while a replica is operating in single_set mode. The active_set is known to all active replicas that are in sync. While operating in single_set mode, verification of quorum on proposals is achieved through the use of the active_set.quorum_met() predicate.
-
-		Let us define incumbent_set and incoming_set as, respectively, the previously active_set and a new proposed set of finalizers, starting at a point in time when a replica becomes aware of a quorum on a block containing a finalizer set transition proposal. This triggers the transition into dual_set mode for this replica.
-
-		As the replica is operating in dual_set mode, the quorum_met() predicate used in single_set mode is temporarily replaced with the extended_quorum_met() predicate, which only returns true if (incumbent_set.quorum_met() AND incoming_set.quorum_met()).
-
-		As we demonstrated in Lemma 1, Lemma 2 and Theorem 3, the protocol is safe when n - f correct replicas achieve quorum on proposals.
-
-		Therefore, no safety is lost as we are transitioning into dual_set mode, since this transition only adds to the quorum constraints guaranteeing safety. However, this comes at the cost of decreased plausible liveness, because of the additional constraint of also requiring the incoming finalizer set to reach quorum in order to progress. //todo : discuss possible recovery from incoming finalizer set liveness failure
-		
-		Theorem 7. A replica can only operate in either single_set mode or in dual_set mode. While operating in dual_set mode, the constraints guaranteeing safety of single_set mode still apply, and thus the dual_set mode constraints guaranteeing safety can only be equally or more restrictive than when operating in single_set mode.
-
-		Proof. Suppose a replica is presented with a proposal b_new, which contains a qc on a previous proposal b_old such that hotstuff.extends(b_new, b_old) returns true, and that the replica could operate in both single_set mode and dual_set mode at the same time, in such a way that active_set == incumbent_set and that an unknown incoming_set also exists. 
-
-		As it needs to verify the qc, the replica invokes both quorum_met() and extended_quorum_met() predicates.
-
-		It follows that, since active_set == incumbent_set, and that active_set.quorum_met() is evaluated in single_set mode, and incumbent_set.quorum_met() is evaluated as part of the extended_quorum_met() predicate in dual_set mode, the number of proposals where (incumbent_set.quorum_met() AND incoming_set.quorum_met()) is necessarily equal or smaller than the number of proposals where active_set.quorum_met(). In addition, any specific proposal where active_set.quorum_met() is false would also imply (incumbent_set.quorum_met() AND incoming_set.quorum_met()) is false as well.
-
-		Therefore, the safety property is not weakened while transitioning into dual_set mode.
+		By holding otherwise valid proposals where a QC for b_2 and w_2 exist, the finality violation on b_0 and w_0 can be proved trivially, simply by calculating the intersection and the symmetrical difference of the finalizer sets having voted for these two proposals. The finalizers contained in the intersection can therefore be blamed for the finality violation. The symmetric difference of finalizers that have voted for either proposal but not for both can be exonerated from wrong doing, thus satisfying the Accountability property requirement.
 
 
 	Light client proof verification
 
-		In order to facilitate the verification of finality by light clients, a proposal also includes a commit_on_qc field, which is a reference to another proposal that is guaranteed to be commited if the current proposal obtains quorum.
+		In order to facilitate the verification of finality by light clients, a proposal also includes a final_on_qc field, which is a reference to another proposal that is guaranteed to be commited if the current proposal reaches quorum.
 
-		For the current proposal to be valid, the signing replica must verify that the commit_on_qc proposal would be committed if the current proposal reaches quorum.
+		For an honest replica to sign a proposal, it must be able to verify that the final_on_qc proposal would be committed if the current proposal reaches quorum, in addition to all other required verifications on the current proposal.
 
-		This additional rule doesn't impact safety, because all proposals that would previously fail the safenode predicate and monotony check would still fail. We we are only adding one more possible restriction, and not removing or relaxing any of the existing ones. Therefore, safey guarantees are maintained.
+		This additional rule doesn't impact safety, because all proposals that would previously fail the safenode predicate and monotony check would still fail. We we are only adding one more possible restriction, and not removing or relaxing any of the existing ones. Therefore, existing safety guarantees are maintained.
 
-		This additional rule doesn't impact liveness either, since an honest leader that is not be able to provide the correct commit_on_qc proposal because they are out of sync would be unable to generate a correct, new proposal at the required view height in the fist place.
+		This additional rule doesn't impact liveness either, since an honest leader that is out of sync, and therefore unable to provide the correct final_on_qc proposal would also be unable to produce a correct proposal that would pass the monotony check of finalizers.
 
-		Since a correct replica would only sign a proposal if the commit_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a message containing commit_on_qc therefore is a proof of finality for the block referred to by the commit_on_qc and all of its ancestors. This proof can be verified by a light client with a single signature verification.
+		Since a correct replica would only sign a proposal if the final_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a proposal containing final_on_qc is therefore a proof of finality for the block referred to by the final_on_qc and all of its ancestors. This proof can be verified by a light client with a single signature verification.
+
 
 */
 
