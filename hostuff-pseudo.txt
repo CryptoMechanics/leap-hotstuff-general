@@ -601,9 +601,9 @@ hotstuff.commit(proposal){
 
 		By Lemma 1, we know that a correct replica cannot sign two conflicting proposal candidates at the same height.
 
-		Suppose we hold proposals b_new and w_new, where b_new.justify = b_2 and w_new.justify = w_2, we can identify and verify the signatures of finalizers, by ensuring the justification's agg_sig matches the aggregate key calculated from the sig_bitset and the schedule.
+		Suppose we hold proposals b_new and w_new, where b_new.justify = b_2 and w_new.justify = w_2, we can identify and verify the signatures of finalizers, by ensuring the justification's agg_sig matches the aggregate key calculated from the sig_bitset and from the schedule.
 
-		Therefore, for b_2 and w_2 to both be included as a QC justification into descendant blocks b_new and w_new, at least one correct replica must have signed two vote messages on conflicting block candidates at the same height, which is impossible due to the checks performed in the function with comment "Lemma 1". Such an event would cause a finality violation on b_0 and w_0.
+		Therefore, for b_2 and w_2 to both be included as a QC justification into descendant blocks b_new and w_new, at least one replica must have signed two vote messages on conflicting block candidates at the same height, which would be impossible for a correct replica due to the checks performed in the function with comment "Lemma 1". Such an event would cause a finality violation on b_0 and w_0.
 
 		For a finality violation to occur, the intersection of the finalizers that have voted for both b_2 and w_2, as evidenced by b_new.justify = b_2 and w_new.justify = w_2 must represent a minimum of f + 1 faulty nodes.
 
@@ -620,7 +620,9 @@ hotstuff.commit(proposal){
 
 		This additional rule doesn't impact liveness either, since an honest leader that is out of sync, and therefore unable to provide the correct final_on_qc proposal would also be unable to produce a correct proposal that would pass the monotony check of finalizers.
 
-		Since a correct replica would only sign a proposal if the final_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a proposal containing final_on_qc is therefore a proof of finality for the block referred to by the final_on_qc proposal and all of its ancestors. A light client in possession of a quorum certificate on a proposal and of the final_on_qc proposal can verify that the aggregate signature over the digest of block_id, phase_counter and final_on_qc matches the appropriate aggregate public key (as dictated by the proposal bitset) by performing a single signature verification.
+		Since a correct replica would only sign a proposal if the final_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a proposal containing final_on_qc is therefore a proof of finality for the block referred to by the final_on_qc proposal and all of its ancestors.
+
+		A light client in possession of a quorum certificate on a proposal and of the proposal referred to by final_on_qc can verify in a single operation that the aggregate signature over the digest of block_id, phase_counter and final_on_qc matches the appropriate aggregate public key, as determined by the bitset included in the QC.
 
 
 */
