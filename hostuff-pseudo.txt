@@ -148,8 +148,6 @@ network_plugin.broadcast(msg){
 
 //on new_block message received event handler (coming from a proposer that is not leader)
 network_plugin.on_new_block_received(block){
-	
-	//abstracted [...] 
 
 	proposal = new_proposal_candidate(block);
 
@@ -160,8 +158,6 @@ network_plugin.on_new_block_received(block){
 //on vote received event handler
 network_plugin.on_vote_received(msg){
 	
-	//abstracted [...] 
-
 	hotstuff.on_vote_received(msg);
 
 }
@@ -224,6 +220,9 @@ pacemaker.on_beat(proposal){
 
 //update high QC
 pacemaker.update_high_qc(new_high_qc){
+
+	// validate qc signatures
+	//abstracted [...] 
 	
 	// if new high QC is higher than current, update to new
 	if (new_high_qc.get_height()>me._high_qc.get_height()){
@@ -251,37 +250,17 @@ pacemaker.on_msg_received(msg){
 	}
 }
 
+/* 
 
-/*
+	The on_next_sync_view function is called by replicas when leader rotation is required, as dictacted by the pacemaker algorithm. 
 
-	onNextSyncView
+	Current implementation defaults to the same scheduling mechanism currently prevalent in EOSIO / Antelope.
 
-	Corresponds to onNextSyncView in hotstuff paper. Handles both leader rotations as well as timeout if leader fails to progress
-
-	on_leader_rotate() should be called by replicas as early as possible when either :
-	 
-	1) no more blocks are expected before leader rotation occurs (eg: after receiving the final block expected from the current leader before the handoff) 
-
-	OR
-
-	2) if we reach (me._block_interval * (me._blocks_per_round - 1)) time into a specific view, and we haven't received the expected second to last block for this round. In other words, assuming our _blocks_per_round value is 12, if we haven't received the 11th block by the time at which the 12th is scheduled, our probability of both receiving the 12th block and being able to provide our high_qc to the next leader before the next round begins are very low. Therefore, we can send our high_qc right away.
-
-	In scenarios where liveness is maintained, this relieves an incoming leader from having to wait until it has received n - f new_view messages at the beginning of a new view since it will already have the highest QC.
-
-	In scenarios where liveness has been lost due to f + 1 faulty replicas, progress is impossible, so the safety rule rejects attempts at creating a QC until liveness has been restored. 
+	However, future updates can dictate a different pacemaker. Calling on_next_sync_view does not affect the safety of the algorithm. 
 
 */
 
-//corresponds to condition #2 of onNextSyncView comment
-//abstracted [...]
-pacemaker.on_round_timeout(){
-	
-	pacemaker.on_leader_rotate();
-
-}
-
-//called by replicas when it is time to rotate to a new leader. See onNextSyncView
-pacemaker.on_leader_rotate(){
+pacemaker.on_next_sync_view(){
 
 	msg = new_message(new_view, me._high_qc); //add highest QC
 
@@ -341,7 +320,7 @@ hotstuff.new_proposal_candidate(block) {
 	if (b_new.parent == b2 && b2.parent == b1) b_new.final_on_qc = b1;
 	else b_new.final_on_qc = b1.parent.final_on_qc;
 
-	b_new.proposal_id = hash(b_new.block_id, b_new.phase_counter, b_new.final_on_qc);
+	b_new.proposal_id = hash(hash(b_new.block_id, b_new.phase_counter), b_new.final_on_qc); //proposal_id is also the digest replicas will sign 
 
 	return b_new;
 }
@@ -352,7 +331,7 @@ hotstuff.is_node_safe(proposal){
 	monotony_check = false;
 	safety_check = false;
 	liveness_check = false;
-	commit_on_qc_check = false;
+	final_on_qc_check = false;
 
 	b_array = hotstuff.get_qc_chain(proposal);
 
@@ -363,10 +342,10 @@ hotstuff.is_node_safe(proposal){
 	if (proposal.parent == b2 && b2.parent == b1) upcoming_commit = b1;
 	else upcoming_commit = b1.parent.final_on_qc;
 
-	//note : if we can't evaluate the QC chain upon activation or chain launch, we set commit_on_qc_check to true
+	//note : if we can't evaluate the QC chain upon activation or chain launch, we set final_on_qc_check to true
 	//abstracted [...]
 	if (upcoming_commit == proposal.final_on_qc){
-		commit_on_qc_check = true;
+		final_on_qc_check = true;
 	}
 	
 	//Lemma 1
@@ -395,7 +374,7 @@ hotstuff.is_node_safe(proposal){
 	}
 
 	//Lemma 2
-	return commit_on_qc_check && monotony_check && (liveness_check || safety_check); //return true if commit on QC check, monotony check and at least one of liveness or safety check evaluated successfully
+	return final_on_qc_check && monotony_check && (liveness_check || safety_check); //return true if commit on QC check, monotony check and at least one of liveness or safety check evaluated successfully
 
 }
 
@@ -403,7 +382,7 @@ hotstuff.is_node_safe(proposal){
 hotstuff.extends(b_descendant, b_ancestor){
 		
 	//in order to qualify as extending b_ancestor, b_descendant must descend from b_ancestor. This means that b_descendant.get_height() must necessarily be greater than b_ancestor.get_height()
-	//however, we must also verify that b_ancestor.block_id exists in the blockchain containing b_descendant.block_id.
+	//however, we must also verify that b_ancestor.block_id is included in the blockchain leading to b_descendant.block_id.
 	//abstracted [...]
 
 	return true || false;
@@ -469,10 +448,6 @@ hotstuff.on_proposal_received(msg){
 	}
 
 	hotstuff.update(msg.proposal);
-
-	//if we are not expecting any additional proposal for the current leader's round, we can call pacemaker.on_leader_rotate() here
-	//corresponds to condition #1 of onNextSyncView comment
-	//abstracted [...]
 
 }
 
@@ -645,7 +620,7 @@ hotstuff.commit(proposal){
 
 		This additional rule doesn't impact liveness either, since an honest leader that is out of sync, and therefore unable to provide the correct final_on_qc proposal would also be unable to produce a correct proposal that would pass the monotony check of finalizers.
 
-		Since a correct replica would only sign a proposal if the final_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a proposal containing final_on_qc is therefore a proof of finality for the block referred to by the final_on_qc and all of its ancestors. This proof can be verified by a light client with a single signature verification.
+		Since a correct replica would only sign a proposal if the final_on_qc was guaranteed to be executed upon the proposal reaching quorum, a QC over a proposal containing final_on_qc is therefore a proof of finality for the block referred to by the final_on_qc proposal and all of its ancestors. A light client in possession of a quorum certificate on a proposal and of the final_on_qc proposal can verify that the aggregate signature over the digest of block_id, phase_counter and final_on_qc matches the appropriate aggregate public key (as dictated by the proposal bitset) by performing a single signature verification.
 
 
 */
