@@ -268,18 +268,6 @@ void save_finalizer_info(bls_public_key key, finalizer_safety_information fsi){
 
 }
 
-hs_proposal get_proposal_by_id(sha256 block_id){
-
-	[...] //abstracted, returns the hs_proposal identified by block_id
-	
-}
-
-hs_proposal get_proposal_by_height(block_id_type branch_head, uint32_t qc_block_height){
-
-	[...] //abstracted, returns the hs_proposal that has a qc at the specified qc_block_height on a specific branch, throw exception if no qc at block_height
-	
-}
-
 bool extends(hs_proposal descendant, hs_proposal ancestor){
 	
 	[...] //abstracted, returns true if ancestor is a parent of descendant, false otherwise
@@ -336,7 +324,7 @@ VoteDecision decide_vote(hs_proposal p, finalizer_safety_information& fsi, block
 	b = b_phases[0] //third phase, commit
 
 	if (fsi.last_vote_block_ref != sha256.empty()){
-		if (p.timestamp > get_proposal_by_id(fsi.last_vote_block_ref).timestamp){
+		if (p.timestamp > fork_db.get_block_by_id(fsi.last_vote_block_ref).timestamp){
 			monotony_check = true;
 		}
 	}
@@ -345,12 +333,12 @@ VoteDecision decide_vote(hs_proposal p, finalizer_safety_information& fsi, block
 	if (fsi.locked_block_ref != sha256.empty()){
 
 		//Safety check : check if this proposal extends the proposal we're locked on
-		if (extends(p, get_proposal_by_id(fsi.locked_block_ref)){
+		if (extends(p, fork_db.get_block_by_id(fsi.locked_block_ref)){
 			safety_check = true;
 		}
 
 		//Liveness check : check if the height of this proposal's justification is higher than the height of the proposal I'm locked on. This allows restoration of liveness if a replica is locked on a stale proposal
-		if (get_proposal_by_height(bc.id(), p.last_qc_block_height).timestamp > get_proposal_by_id(fsi.locked_block_ref).timestamp)){
+		if (fork_db.get_block_by_height(bc.id(), p.last_qc_block_height).timestamp > fork_db.get_block_by_id(fsi.locked_block_ref).timestamp)){
 			liveness_check = true;
 		}
 
@@ -376,12 +364,12 @@ VoteDecision decide_vote(hs_proposal p, finalizer_safety_information& fsi, block
 
 		bool enough_for_strong_vote = false;
 
-		if (!time_range_interference || extends(p, get_proposal_by_id(fsi.last_vote_block_ref)) enough_for_strong_vote = true;
+		if (!time_range_interference || extends(p, fork_db.get_block_by_id(fsi.last_vote_block_ref)) enough_for_strong_vote = true;
 
 		fsi.is_last_vote_strong = enough_for_strong_vote;
 		fsi.last_vote_block_ref = p.block_id; //v_height
 
-		if (b1.timestamp > get_proposal_by_id(fsi.locked_block_ref).timestamp){
+		if (b1.timestamp > fork_db.get_block_by_id(fsi.locked_block_ref).timestamp){
 			fsi.locked_block_ref = b1.block_id; //commit phase on b1
 		}
 
@@ -479,9 +467,9 @@ hs_proposal[] get_qc_chain(hs_proposal p){
 	
 	b[];
 
-	b[2] = fork_db.get_proposal_by_height(p.block_id, p.last_qc_block_height); //first phase, prepare
-	b[1] = fork_db.get_proposal_by_height(p.block_id, b[2].last_qc_block_height); //second phase, precommit
-	b[0] = fork_db.get_proposal_by_height(p.block_id, b[1].last_qc_block_height); //third phase, commit
+	b[2] = fork_db.get_block_by_height(p.block_id, p.last_qc_block_height); //first phase, prepare
+	b[1] = fork_db.get_block_by_height(p.block_id, b[2].last_qc_block_height); //second phase, precommit
+	b[0] = fork_db.get_block_by_height(p.block_id, b[1].last_qc_block_height); //third phase, commit
 
 	return b;
 
