@@ -34,13 +34,10 @@ struct fork_db {
 	block_handle get_head_block(){ [...] //get the head block on the branch I'm looking to extend }
 }
 
-
 struct block_header_state_core {
-	
 	uint32_t					last_final_block_height; //b_exec under hotstuff
 	std::optional<uint32_t>		final_on_strong_qc_block_height;
 	std::optional<uint32_t>		last_qc_block_height; //high_qc under hotstuff
-
 	block_header_state_core next(uint32_t last_qc_block_height, bool is_last_qc_strong){
 		 // no state change if last_qc_block_height is the same
 	    if( last_qc_block_height == this->last_qc_block_height ) {
@@ -124,7 +121,6 @@ struct valid_quorum_certificate {
 	signature(s){}
 
 	bool is_strong() {if (weak_bitset.has_value()) return false; else return true; }
-
 }
 
 struct pending_quorum_certificate {
@@ -296,22 +292,19 @@ void on_proposal_received(hs_proposal p, block_handle& bc){
 
 	core new_core = bc.bhs.core.next(p.last_qc_block_height, p.is_last_qc_strong, ...); //f1
 	//todo : f2 
-	//add to fork db + block_header_state.core
+	[...] // add to fork db + update block_header_state.core
 
 	bls_public_key[] my_finalizers = [...] //abstracted, must return the public keys of my finalizers that are also active in the current finalizer policy
 	//only relevant if I have at least one finalizer
 	if (my_finalizers.size()>0) {
-		hs_vote_messages[] msgs;
 		for (auto f : my_finalizers){
 			finalizer_safety_information& fsi = get_finalizer_info(f);
 			vote_decision vd = decide_vote(p, fsi, bc); //changes fsi unless NoVote
 			if (vd == VoteDecision::StrongVote || vd == VoteDecision::WeakVote){
 				save_finalizer_info(f, fsi); //save finalizer info to prevent double-voting
-				hs_vote_message msg = [...] //create vote message
-				msgs.push_back(msg);
+				hs_vote_message msg = [...] //create + broadcast vote message
 			}
 		}
-		for (auto v : vote_messages) [...] //abstracted, broadcast vote message
 	}
 }
 
