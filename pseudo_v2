@@ -134,6 +134,25 @@ struct block_handle {
 
 }
 
+//this structure holds the required information and methods for the Hotstuff algorithm. It is derived from a block and block_header content, notably extensions 
+struct hs_proposal {
+	
+	//may not exist in final implementation, subject to change 
+
+	block_id_type 						block_id; //computed, to be replaced with proposal_digest eventually
+
+	uint32_t 							get_height(); //from block_id
+	block_timestamp_type 				timestamp; //from block header
+
+	//qc specific information
+
+	uint32_t							last_qc_block_height; //from block header extension
+	bool 								is_last_qc_strong; //from block header extension
+
+	valid_quorum_certificate		 	qc; //from block extension
+
+};
+
 struct valid_quorum_certificate {
 	hs_bitset 				strong_bitset;
 	optional<hs_bitset> 	weak_bitset; //omitted if strong qc
@@ -201,25 +220,6 @@ struct hotstuff_header_extension {
 struct hotstuff_block_extension {
 	valid_quorum_certificate 	qc;
 }
-
-//this structure holds the required information and methods for the Hotstuff algorithm. It is derived from a block and block_header content, notably extensions 
-struct hs_proposal {
-	
-	//may not exist in final implementation, subject to change 
-
-	block_id_type 						block_id; //computed, to be replaced with proposal_digest eventually
-
-	uint32_t 							get_height(); //from block_id
-	block_timestamp_type 				timestamp; //from block header
-
-	//qc specific information
-
-	uint32_t							last_qc_block_height; //from block header extension
-	bool 								is_last_qc_strong; //from block header extension
-
-	valid_quorum_certificate		 	qc; //from block extension
-
-};
 
 struct signed_block {
 
